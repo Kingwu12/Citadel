@@ -1,5 +1,5 @@
 /**
- * Shared mission bank logic: load missions/bank.json, select today's mission by Melbourne time.
+ * Shared mission bank logic: load data/missions/bank.json, select today's mission by Melbourne time.
  * Supports grouped format (groups) and legacy format (daily).
  */
 
@@ -133,11 +133,11 @@ function selectTodaysMission(data, logger) {
 
 /**
  * Load and parse mission bank from disk.
- * @param {string} [bankPath] - Path to bank.json (default: process.cwd() + missions/bank.json)
+ * @param {string} [bankPath] - Path to bank.json (default: process.cwd() + data/missions/bank.json)
  * @returns {Promise<object>} Parsed bank data
  */
 async function loadMissionBank(bankPath) {
-  const pathToUse = bankPath || path.join(process.cwd(), 'missions', 'bank.json');
+  const pathToUse = bankPath || path.join(process.cwd(), 'data', 'missions', 'bank.json');
   const raw = await fs.readFile(pathToUse, 'utf8');
   return JSON.parse(raw);
 }
@@ -151,7 +151,7 @@ async function getTodaysMission(opts = {}) {
   const { bankPath, logger } = opts;
   const log = logger || { missionBank: (...a) => console.log('[mission-bank]', ...a) };
 
-  const pathToUse = bankPath || path.join(process.cwd(), 'missions', 'bank.json');
+  const pathToUse = bankPath || path.join(process.cwd(), 'data', 'missions', 'bank.json');
   const data = await loadMissionBank(pathToUse);
   log.missionBank('load success');
   return selectTodaysMission(data, logger);

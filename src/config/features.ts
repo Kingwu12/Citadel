@@ -13,13 +13,11 @@ export interface GuildFeaturesConfig {
 /** Safe defaults when a guild is unknown or omits feature keys in the registry. */
 export const DEFAULT_GUILD_FEATURES: GuildFeaturesConfig = {
   missionsEnabled: false,
-  executionEnabled: false,
+  executionEnabled: true,
   publicSessionMessages: false,
   verdictEnabled: false,
 };
 
-export function mergeGuildFeatures(
-  partial?: Partial<GuildFeaturesConfig>,
-): GuildFeaturesConfig {
+export function mergeGuildFeatures(partial?: Partial<GuildFeaturesConfig>): GuildFeaturesConfig {
   return { ...DEFAULT_GUILD_FEATURES, ...partial };
 }

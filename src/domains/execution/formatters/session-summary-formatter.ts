@@ -24,6 +24,22 @@ export function formatExecutionDurationMs(durationMs: number): string {
   return '< 1m';
 }
 
+/** Ephemeral / DM line when `/today` has nothing to show for the calendar day. */
+export const TODAY_SUMMARY_EMPTY = 'No completed sessions today.';
+
+/**
+ * One-line daily rollup for `/today` (session count + summed duration).
+ */
+export function formatTodayExecutionSummary(
+  sessionCount: number,
+  totalDurationMs: number,
+): string {
+  if (sessionCount <= 0) return TODAY_SUMMARY_EMPTY;
+  const duration = formatExecutionDurationMs(totalDurationMs);
+  const noun = sessionCount === 1 ? 'session' : 'sessions';
+  return `Today: ${sessionCount} ${noun} · ${duration} total.`;
+}
+
 export type PublicSessionCompleteInput = {
   discordUserId: string;
   durationMs: number;

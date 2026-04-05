@@ -3,6 +3,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 
+import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
 import { ExecutionSessionService } from '../services/execution-session-service';
 
@@ -29,6 +30,10 @@ export async function handleStartCommand(
     interaction.guildId === null ||
     interaction.channelId === null
   ) {
+    executionLog.info('start_blocked', {
+      reason: 'invalid_context',
+      userId: interaction.user.id,
+    });
     await interaction.reply({
       content: START_REPLY_DENIED,
       ephemeral: true,
@@ -38,12 +43,24 @@ export async function handleStartCommand(
 
   const ctx = toExecutionAccessContext(interaction);
   if (!executionAccessService.canUseExecutionCommand(ctx)) {
+    executionLog.info('start_blocked', {
+      reason: 'execution_not_allowed',
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+    });
     await interaction.reply({
       content: START_REPLY_DENIED,
       ephemeral: true,
     });
     return;
   }
+
+  executionLog.info('start_attempt', {
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+  });
 
   try {
     const result = await executionSessionService.startSession({
@@ -53,6 +70,12 @@ export async function handleStartCommand(
     });
 
     if (!result.ok) {
+      executionLog.info('start_blocked', {
+        reason: 'already_active',
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+      });
       await interaction.reply({
         content: START_REPLY_ALREADY_ACTIVE,
         ephemeral: true,
@@ -60,11 +83,25 @@ export async function handleStartCommand(
       return;
     }
 
+    executionLog.info('start_success', {
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+    });
     await interaction.reply({
       content: START_REPLY_SUCCESS,
       ephemeral: true,
     });
-  } catch {
+  } catch (err) {
+    executionLog.error(
+      'start_error',
+      {
+        userId: interaction.user.id,
+        guildId: interaction.guildId ?? undefined,
+        channelId: interaction.channelId ?? undefined,
+      },
+      err,
+    );
     await interaction.reply({
       content: START_REPLY_ERROR,
       ephemeral: true,
