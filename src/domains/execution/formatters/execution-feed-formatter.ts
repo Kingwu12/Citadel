@@ -49,17 +49,21 @@ export function buildExecutionFeedEmbed(p: {
     ? sanitizeCommitmentDisplay(p.proofFallbackText, 700)
     : undefined;
 
-  const embed = new EmbedBuilder()
-    .setTitle('Loop closed');
-
+  const lines: string[] = [];
   if (executed.length > 0) {
-    embed.addFields({ name: 'EXECUTED', value: executed, inline: true });
+    lines.push(`EXECUTED: ${executed}`);
   }
-  embed.addFields({ name: 'DURATION', value: duration, inline: true });
+  lines.push(`DURATION: ${duration}`);
+
+  const embed = new EmbedBuilder().setTitle('Loop closed');
+  if (lines.length > 0) {
+    embed.setDescription(lines.join('\n'));
+  }
+
   if (p.proofImageRef) {
     embed.setImage(p.proofImageRef);
   } else if (proofFallbackText) {
-    embed.addFields({ name: 'Proof', value: proofFallbackText, inline: false });
+    embed.setDescription([...(lines.length > 0 ? lines : []), `PROOF: ${proofFallbackText}`].join('\n'));
   }
 
   return embed;

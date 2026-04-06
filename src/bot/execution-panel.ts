@@ -39,6 +39,7 @@ const closedLoopRepo = new ClosedLoopRepo();
 
 export const PANEL_BUTTON_OPEN = 'citadel:exec:open';
 export const PANEL_BUTTON_TODAY = 'citadel:exec:today';
+export const PANEL_BUTTON_ACTIVE_MORE = 'citadel:exec:active:more';
 export const LOOP_PANEL_BUTTON_CLOSE_PREFIX = 'citadel:exec:loop:close:';
 const MODAL_START = 'citadel:modal:start';
 const MODAL_END = 'citadel:modal:end';
@@ -148,13 +149,12 @@ async function buildPanelEmbed(
     shown.map(async (loop) => {
       const member = guild ? await guild.members.fetch(loop.discordUserId).catch(() => null) : null;
       const name = member?.displayName ?? `<@${loop.discordUserId}>`;
-      const intention = sanitizeCommitmentDisplay(loop.commitmentText, 80) || '—';
-      return `▸ ${name} — ${intention} · ${formatElapsedCompact(loop.openedAt)}`;
+      return `▸ ${name} — ${formatElapsedCompact(loop.openedAt)}`;
     }),
   );
   const remainder = Math.max(0, activeCount - activeEntries.length);
   const activeValue = activeEntries.length > 0
-    ? [...activeEntries, remainder > 0 ? `+${remainder} more` : '']
+    ? [...activeEntries, remainder > 0 ? `+${remainder}` : '']
       .filter(Boolean)
       .join('\n')
     : 'No active loops.';
@@ -193,14 +193,12 @@ async function buildPanelEmbed(
     .addFields(
       { name: '◈ EXECUTING NOW', value: activeValue, inline: false },
       { name: '\u200B', value: '\u200B', inline: false },
-      { name: '◈ TODAY', value: todayValue, inline: false },
-      { name: '\u200B', value: '\u200B', inline: false },
-      { name: '◈ TOTAL', value: totalValue, inline: false },
+      { name: '\u200B', value: `◈ TODAY: ${todayValue}\n◈ TOTAL: ${totalValue}`, inline: false },
     )
     .setFooter({ text: `MODE LABS · updated at ${formatPanelClock(now)}` });
 }
 
-function buildPanelComponents(): ActionRowBuilder<ButtonBuilder>[] {
+function buildPanelComponents(guildId: string, overflowCount: number): ActionRowBuilder<ButtonBuilder>[] {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(PANEL_BUTTON_OPEN)
@@ -211,6 +209,18 @@ function buildPanelComponents(): ActionRowBuilder<ButtonBuilder>[] {
       .setLabel('Today')
       .setStyle(ButtonStyle.Secondary),
   );
+  if (overflowCount > 0) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(PANEL_BUTTON_ACTIVE_MORE)
+        .setLabel(`+${overflowCount}`)
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setStyle(ButtonStyle.Link)
+        .setLabel('View all')
+        .setURL(`https://discord.com/channels/${guildId}/${getActiveLoopsChannelId()}`),
+    );
+  }
   return [row];
 }
 
@@ -474,9 +484,9 @@ export async function ensureExecutionPanel(
 
   const textChannel = channel as GuildTextBasedChannel;
   const embed = await buildPanelEmbed(client, guildId, channelId, focusUserId);
-  const components = buildPanelComponents();
-  const clientId = client.user?.id;
   const activeCount = (await openLoopRepo.listOpenLoopsInContext(guildId, channelId)).length;
+  const components = buildPanelComponents(guildId, Math.max(0, activeCount - ACTIVE_VISIBLE_LIMIT));
+  const clientId = client.user?.id;
 
   let panelMessage: Message | null = null;
   const storedId = await panelStateRepo.getPanelMessageId(guildId, channelId);
@@ -591,7 +601,11 @@ export async function refreshExecutionPanelIfActive(client: Client): Promise<voi
       return;
     }
 
-    await panelMessage.edit({ content: null, embeds: [embed], components: buildPanelComponents() });
+    await panelMessage.edit({
+      content: null,
+      embeds: [embed],
+      components: buildPanelComponents(guildId, Math.max(0, openLoops.length - ACTIVE_VISIBLE_LIMIT)),
+    });
     lastIntervalRenderByContext.set(contextKey, signature);
     executionLog.info('execution_panel_updated', {
       guildId,
@@ -610,6 +624,7 @@ export function isExecutionPanelButtonCustomId(customId: string): boolean {
   return (
     customId === PANEL_BUTTON_OPEN ||
     customId === PANEL_BUTTON_TODAY ||
+    customId === PANEL_BUTTON_ACTIVE_MORE ||
     customId.startsWith(LOOP_PANEL_BUTTON_CLOSE_PREFIX)
   );
 }
@@ -762,7 +777,7 @@ export async function handleExecutionPanelButton(interaction: ButtonInteraction)
     return true;
   }
 
-  const isMainPanelButton = customId === PANEL_BUTTON_OPEN || customId === PANEL_BUTTON_TODAY;
+  const isMainPanelButton = customId === PANEL_BUTTON_OPEN || customId === PANEL_BUTTON_TODAY || customId === PANEL_BUTTON_ACTIVE_MORE;
   if (isMainPanelButton && !isConfiguredPanelChannel(loc.guildId, loc.channelId)) {
     await interaction
       .reply({ content: 'Use the panel channel.', ephemeral: true })
@@ -785,6 +800,10 @@ export async function handleExecutionPanelButton(interaction: ButtonInteraction)
 
   if (customId === PANEL_BUTTON_OPEN) {
     await handleOpenButton(interaction);
+    return true;
+  }
+  if (customId === PANEL_BUTTON_ACTIVE_MORE) {
+    await handleActiveMoreButton(interaction);
     return true;
   }
   if (customId.startsWith(LOOP_PANEL_BUTTON_CLOSE_PREFIX)) {
@@ -882,5 +901,24 @@ async function handleTodayButton(interaction: ButtonInteraction): Promise<void> 
     );
     await interaction.editReply({ content: 'Something went wrong. Try again in a moment.' });
   }
+}
+
+async function handleActiveMoreButton(interaction: ButtonInteraction): Promise<void> {
+  const guildId = interaction.guildId!;
+  const channelId = interaction.channelId!;
+  const openLoops = await openLoopRepo.listOpenLoopsInContext(guildId, channelId, ACTIVE_FETCH_LIMIT);
+  const sorted = [...openLoops].sort((a, b) => a.openedAt - b.openedAt);
+  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+  const lines = await Promise.all(
+    sorted.map(async (loop) => {
+      const member = guild ? await guild.members.fetch(loop.discordUserId).catch(() => null) : null;
+      const name = member?.displayName ?? `<@${loop.discordUserId}>`;
+      return `▸ ${name} — ${formatElapsedCompact(loop.openedAt)}`;
+    }),
+  );
+  const content = lines.length > 0
+    ? ['ACTIVE LOOPS', '', ...lines].join('\n')
+    : 'ACTIVE LOOPS\n\nNo active loops.';
+  await interaction.reply({ content, ephemeral: true });
 }
 

@@ -10,9 +10,7 @@ export function formatElapsedCompact(openedAt: number): string {
   const minutes = Math.floor(elapsedMs / 60000);
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  const remMin = minutes % 60;
-  if (remMin === 0) return `${hours}h`;
-  return `${hours}h ${remMin}m`;
+  return `${hours}h`;
 }
 
 export function buildLoopOpenCockpitEmbed(params: {
