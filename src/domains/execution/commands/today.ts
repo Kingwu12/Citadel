@@ -12,6 +12,7 @@ import { START_REPLY_DENIED, START_REPLY_ERROR } from './start';
 export const todaySlashCommand = new SlashCommandBuilder()
   .setName('today')
   .setDescription("Today's loops");
+const TODAY_EPHEMERAL_DELETE_DELAY_MS = 4000;
 
 export async function handleTodayCommand(
   interaction: ChatInputCommandInteraction,
@@ -51,6 +52,9 @@ export async function handleTodayCommand(
       content,
       flags: MessageFlags.Ephemeral,
     });
+    setTimeout(() => {
+      void interaction.deleteReply().catch(() => {});
+    }, TODAY_EPHEMERAL_DELETE_DELAY_MS);
   } catch (err) {
     executionLog.error(
       'today_summary_error',

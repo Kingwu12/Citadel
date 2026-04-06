@@ -5,6 +5,7 @@ import { getExecutionPanelStateDocPath } from './execution-collections';
 
 export type ExecutionPanelStateDoc = {
   panelMessageId: string;
+  focusUserId?: string;
   updatedAt: number;
 };
 
@@ -23,6 +24,14 @@ export class ExecutionPanelStateRepo {
     return typeof id === 'string' && id.length > 0 ? id : null;
   }
 
+  async getFocusUserId(guildId: string, channelId: string): Promise<string | null> {
+    const snap = await this.ref(guildId, channelId).get();
+    if (!snap.exists) return null;
+    const data = snap.data();
+    const id = data?.focusUserId;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  }
+
   async setPanelMessageId(
     guildId: string,
     channelId: string,
@@ -31,6 +40,14 @@ export class ExecutionPanelStateRepo {
     const now = Date.now();
     await this.ref(guildId, channelId).set(
       { panelMessageId, updatedAt: now, schemaVersion: 1 },
+      { merge: true },
+    );
+  }
+
+  async setFocusUserId(guildId: string, channelId: string, focusUserId: string): Promise<void> {
+    const now = Date.now();
+    await this.ref(guildId, channelId).set(
+      { focusUserId, updatedAt: now, schemaVersion: 1 },
       { merge: true },
     );
   }

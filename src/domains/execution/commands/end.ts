@@ -4,6 +4,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 
+import { ensureExecutionPanel } from '../../../bot/execution-panel';
 import { sendExecutionCompleteToFeed } from '../../../bot/execution-feed-channel';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
@@ -160,23 +161,16 @@ export async function handleEndCommand(
       closedLoopFirestoreId: result.closedLoopFirestoreId,
     });
 
-    let completion =
-      result.closedLoop.proofText?.trim() ?? '';
-    if (!completion && result.closedLoop.proofAttachmentUrls?.length) {
-      completion = 'Attachment';
-    }
-    if (!completion) completion = '—';
-
+    await ensureExecutionPanel(interaction.client, { source: 'slash_close' });
     await sendExecutionCompleteToFeed(interaction.client, {
       userId: interaction.user.id,
       durationMs: result.closedLoop.openDurationMs,
       taskText: result.closedLoop.commitmentText,
-      completionText: completion,
+      proofText: result.closedLoop.proofText,
       reflectionStatus: result.closedLoop.reflectionStatus,
-      reflectionNotes: result.closedLoop.reflectionNotes,
+      proofAttachmentUrls: result.closedLoop.proofAttachmentUrls,
     });
-
-    await interaction.editReply({ content: 'Loop closed.' });
+    await interaction.deleteReply().catch(() => {});
   } catch (err) {
     executionLog.error(
       'loop_close_error',

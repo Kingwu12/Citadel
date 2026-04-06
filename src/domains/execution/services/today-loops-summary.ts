@@ -1,4 +1,3 @@
-import { formatExecutionDurationShort } from '../formatters/execution-feed-formatter';
 import { formatTodayLoopsSummary } from '../formatters/loop-formatters';
 import { ClosedLoopRepo } from '../repositories/closed-loop-repo';
 import { LoopService } from './loop-service';
@@ -19,7 +18,6 @@ export async function buildTodayLoopsSummaryForUser(discordUserId: string): Prom
       discordUserId,
       range,
     );
-    const durationSumMs = await closedLoopRepo.sumOpenDurationMsClosedInRange(discordUserId, range);
     const open = await loopService.getOpenLoopForUser(discordUserId);
 
     const openCountsTowardOpenedToday =
@@ -32,6 +30,5 @@ export async function buildTodayLoopsSummaryForUser(discordUserId: string): Prom
       closedToday,
       hasOpenLoop: open !== null,
       openCommitmentOneLine: open?.commitmentText,
-      totalDurationClosedToday: formatExecutionDurationShort(durationSumMs),
     });
 }

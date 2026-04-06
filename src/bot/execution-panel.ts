@@ -20,6 +20,7 @@ import {
   isExecutionPanelConfigured,
 } from '../config/execution-panel-env';
 import { ExecutionPanelStateRepo } from '../domains/execution/repositories/execution-panel-state-repo';
+import { OpenLoopRepo } from '../domains/execution/repositories/open-loop-repo';
 import { executionAccessService, toExecutionAccessContext } from '../domains/execution/services/execution-access-service';
 import { LoopService } from '../domains/execution/services/loop-service';
 import { buildTodayLoopsSummaryForUser } from '../domains/execution/services/today-loops-summary';
@@ -29,6 +30,7 @@ import { sendExecutionCompleteToFeed } from './execution-feed-channel';
 
 const loopService = new LoopService();
 const panelStateRepo = new ExecutionPanelStateRepo();
+const openLoopRepo = new OpenLoopRepo();
 
 export const PANEL_BUTTON_OPEN = 'citadel:exec:open';
 export const PANEL_BUTTON_CLOSE = 'citadel:exec:close';
@@ -38,6 +40,10 @@ const MODAL_END = 'citadel:modal:end';
 const INPUT_COMMITMENT = 'commitment';
 const INPUT_PROOF = 'proof';
 const INPUT_REFLECTION = 'reflection';
+const PRESENCE_NAME_LIMIT = 3;
+const CLOSE_PROOF_REQUIRED_MESSAGE = 'Drop proof before closing — one line or an image is enough.';
+const ACTIVE_INTENTION_PREVIEW_LIMIT = 90;
+const YOU_INTENTION_PREVIEW_LIMIT = 120;
 
 export type EnsurePanelResult =
   | { ok: true; action: 'created' | 'updated'; panelMessageId: string }
@@ -81,17 +87,70 @@ function messageIsOurPanel(message: Message, clientId: string | undefined): bool
 /** Restrained dark bar — reads as instrumentation, not marketing. */
 const PANEL_EMBED_COLOR = 0x1e1f22;
 
-function buildPanelEmbed(): EmbedBuilder {
+function formatElapsedIn(openedAt: number): string {
+  const elapsedMs = Math.max(0, Date.now() - openedAt);
+  const minutes = Math.floor(elapsedMs / 60000);
+  if (minutes < 1) return 'just started';
+  if (minutes < 60) return `${minutes} min in`;
+  const hours = Math.floor(minutes / 60);
+  const remMin = minutes % 60;
+  if (remMin === 0) return `${hours} hr in`;
+  return `${hours} hr ${remMin} min in`;
+}
+
+async function buildPanelEmbed(
+  client: Client,
+  guildId: string,
+  channelId: string,
+  focusUserId: string | null,
+): Promise<EmbedBuilder> {
+  const openLoops = await openLoopRepo.listOpenLoopsInContext(guildId, channelId);
+  const activeCount = openLoops.length;
+  const shown = openLoops.slice(0, PRESENCE_NAME_LIMIT);
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  const activeEntries = await Promise.all(
+    shown.map(async (loop) => {
+      const member = guild ? await guild.members.fetch(loop.discordUserId).catch(() => null) : null;
+      const name = member?.displayName ?? `<@${loop.discordUserId}>`;
+      const compactIntention = loop.commitmentText.replace(/\s+/g, ' ').trim();
+      const intention = compactIntention.length > ACTIVE_INTENTION_PREVIEW_LIMIT
+        ? `${compactIntention.slice(0, ACTIVE_INTENTION_PREVIEW_LIMIT - 1)}...`
+        : compactIntention;
+      return `${name} — ${intention || '—'}`;
+    }),
+  );
+  const remainder = Math.max(0, activeCount - activeEntries.length);
+  const namesLine = activeEntries.length > 0
+    ? `${activeEntries.join('\n')}${remainder > 0 ? `\n+${remainder} more` : ''}`
+    : 'Idle';
+  const activeLine = `${activeCount} working`;
+  const focusOpenLoop = focusUserId
+    ? openLoops.find((loop) => loop.discordUserId === focusUserId) ?? null
+    : null;
+  const youLine = focusOpenLoop
+    ? (() => {
+      const compactIntention = focusOpenLoop.commitmentText.replace(/\s+/g, ' ').trim();
+      const intention = compactIntention.length > YOU_INTENTION_PREVIEW_LIMIT
+        ? `${compactIntention.slice(0, YOU_INTENTION_PREVIEW_LIMIT - 1)}...`
+        : compactIntention;
+      return `${intention || '—'}\n${formatElapsedIn(focusOpenLoop.openedAt)}`;
+    })()
+    : 'You — Idle';
+
   return new EmbedBuilder()
     .setColor(PANEL_EMBED_COLOR)
     .setTitle('CITADEL')
-    .setDescription('Online.')
+    .setDescription('● LIVE')
     .addFields(
+      { name: '\u200b', value: '\u200b', inline: false },
       { name: 'State', value: 'LIVE', inline: false },
-      { name: 'Loop', value: 'No active loop', inline: false },
-      { name: 'Protocol', value: 'Open → Execute → Close', inline: false },
-    )
-    .setFooter({ text: 'commit → execute → report → repeat' });
+      { name: '\u200b', value: '\u200b', inline: false },
+      { name: 'Active', value: `${activeLine}\n${namesLine}`, inline: false },
+      { name: '\u200b', value: '\u200b', inline: false },
+      { name: 'You', value: youLine, inline: false },
+      { name: '\u200b', value: '\u200b', inline: false },
+      { name: 'Protocol', value: 'open → execute → close', inline: false },
+    );
 }
 
 function buildPanelComponents(): ActionRowBuilder<ButtonBuilder>[] {
@@ -110,19 +169,6 @@ function buildPanelComponents(): ActionRowBuilder<ButtonBuilder>[] {
       .setStyle(ButtonStyle.Secondary),
   );
   return [row];
-}
-
-function displayNameFromModal(interaction: ModalSubmitInteraction): string {
-  const m = interaction.member;
-  if (
-    m &&
-    typeof m === 'object' &&
-    'displayName' in m &&
-    typeof (m as { displayName: string }).displayName === 'string'
-  ) {
-    return (m as { displayName: string }).displayName;
-  }
-  return interaction.user.username;
 }
 
 function buildStartModal(): ModalBuilder {
@@ -180,6 +226,12 @@ export async function ensureExecutionPanel(
 
   const guildId = getExecutionPanelGuildId();
   const channelId = getExecutionPanelChannelId();
+  const focusUserId = typeof logExtra.userId === 'string' && logExtra.userId.length > 0
+    ? logExtra.userId
+    : await panelStateRepo.getFocusUserId(guildId, channelId);
+  if (typeof logExtra.userId === 'string' && logExtra.userId.length > 0) {
+    await panelStateRepo.setFocusUserId(guildId, channelId, logExtra.userId);
+  }
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) {
     executionLog.error('execution_panel_bootstrap_failed', { guildId, channelId, reason: 'guild_fetch' });
@@ -197,9 +249,10 @@ export async function ensureExecutionPanel(
   }
 
   const textChannel = channel as GuildTextBasedChannel;
-  const embed = buildPanelEmbed();
+  const embed = await buildPanelEmbed(client, guildId, channelId, focusUserId);
   const components = buildPanelComponents();
   const clientId = client.user?.id;
+  const activeCount = (await openLoopRepo.listOpenLoopsInContext(guildId, channelId)).length;
 
   let panelMessage: Message | null = null;
   const storedId = await panelStateRepo.getPanelMessageId(guildId, channelId);
@@ -234,6 +287,14 @@ export async function ensureExecutionPanel(
         guildId,
         channelId,
         panelMessageId: panelMessage.id,
+        active_count: String(activeCount),
+        ...logExtra,
+      });
+      executionLog.info('execution_panel_updated', {
+        guildId,
+        channelId,
+        panelMessageId: panelMessage.id,
+        active_count: String(activeCount),
         ...logExtra,
       });
       return {
@@ -249,6 +310,7 @@ export async function ensureExecutionPanel(
       guildId,
       channelId,
       panelMessageId: created.id,
+      active_count: String(activeCount),
       ...logExtra,
     });
     return {
@@ -377,7 +439,8 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
         source: 'panel_modal',
       });
 
-      await interaction.editReply({ content: 'Loop open.' });
+      await ensureExecutionPanel(interaction.client, { source: 'panel_open', userId });
+      await interaction.deleteReply().catch(() => {});
     } catch (err) {
       console.error('[citadel] MODAL_START error', err);
       executionLog.error('loop_open_error', { userId, guildId, channelId, source: 'panel_modal' }, err);
@@ -405,7 +468,7 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
         channelId,
         source: 'panel_modal',
       });
-      await interaction.reply({ content: 'Required.', ephemeral: true });
+      await interaction.reply({ content: CLOSE_PROOF_REQUIRED_MESSAGE, ephemeral: true });
       return true;
     }
 
@@ -481,16 +544,17 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
         source: 'panel_modal',
       });
 
+      await ensureExecutionPanel(interaction.client, { source: 'panel_close', userId });
       await sendExecutionCompleteToFeed(interaction.client, {
         userId,
         durationMs: result.closedLoop.openDurationMs,
         taskText: result.closedLoop.commitmentText,
-        completionText: proof,
+        proofText: result.closedLoop.proofText,
         reflectionStatus: result.closedLoop.reflectionStatus,
-        reflectionNotes: result.closedLoop.reflectionNotes,
+        proofAttachmentUrls: result.closedLoop.proofAttachmentUrls,
       });
 
-      await interaction.editReply({ content: 'Loop closed.' });
+      await interaction.deleteReply().catch(() => {});
     } catch (err) {
       console.error('[citadel] MODAL_END error', err);
       executionLog.error(
@@ -597,7 +661,6 @@ async function handleCloseButton(interaction: ButtonInteraction): Promise<void> 
     });
     return;
   }
-
   await interaction.showModal(buildEndModal());
 }
 

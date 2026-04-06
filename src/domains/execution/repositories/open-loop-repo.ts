@@ -85,4 +85,19 @@ export class OpenLoopRepo {
     if (!discordUserId) return;
     await this.docRef(discordUserId).delete();
   }
+
+  async listOpenLoopsInContext(guildId: string, channelId: string): Promise<OpenLoop[]> {
+    const snap = await this
+      .collection()
+      .where('guildId', '==', guildId)
+      .where('channelId', '==', channelId)
+      .get();
+
+    const loops: OpenLoop[] = [];
+    for (const doc of snap.docs) {
+      const mapped = mapSnapshotToOpenLoop(doc);
+      if (mapped) loops.push(mapped);
+    }
+    return loops;
+  }
 }

@@ -19,8 +19,7 @@ export function getExecutionPanelChannelId(): string {
 }
 
 export function getExecutionFeedChannelId(): string {
-  const v = process.env.EXECUTION_FEED_CHANNEL_ID?.trim();
-  return v && v.length > 0 ? v : DEFAULT_EXECUTION_FEED_CHANNEL_ID;
+  return DEFAULT_EXECUTION_FEED_CHANNEL_ID;
 }
 
 /** Always on: guild/channel resolve to defaults or env. */

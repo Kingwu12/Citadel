@@ -18,45 +18,35 @@ export function formatExecutionDurationShort(ms: number): string {
 
 export type ExecutionCompleteFeedParams = {
   userId: string;
+  actorName?: string;
+  actorAvatarUrl?: string;
   durationMs: number;
   /** Text from when the loop was opened. */
   taskText: string;
-  /** Primary completion text. */
-  completionText: string;
+  proofText?: string;
   reflectionStatus: ReflectionStatus;
-  reflectionNotes?: string;
+  proofAttachmentUrls?: string[];
 };
 
 export function buildExecutionCompleteEmbed(p: ExecutionCompleteFeedParams): EmbedBuilder {
-  const opened = sanitizeCommitmentDisplay(p.taskText, 500);
-  const executed = sanitizeCommitmentDisplay(p.completionText, 1000);
-  const dur = formatExecutionDurationShort(p.durationMs);
+  const actor = p.actorName?.trim() || `<@${p.userId}>`;
+  const duration = formatExecutionDurationShort(p.durationMs);
+  const executed = sanitizeCommitmentDisplay(p.taskText, 500) || '—';
+  const proofText = p.proofText ? sanitizeCommitmentDisplay(p.proofText, 700) : undefined;
+  const proofValue = proofText ?? (p.proofAttachmentUrls?.length ? 'Attachment' : undefined);
+  const proofLine = proofValue ?? `${p.reflectionStatus}`;
 
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(FEED_EMBED_COLOR)
-    .setTitle('CITADEL')
-    .setDescription(
-      `<@${p.userId}> completed a ${dur} execution session.\n\nLoop closed.`,
-    )
+    .setTitle('Loop closed')
+    .setAuthor({
+      name: actor,
+      iconURL: p.actorAvatarUrl,
+    })
     .addFields(
-      { name: 'Opened', value: opened || '—', inline: false },
-      { name: 'Executed', value: executed || '—', inline: false },
-    );
-
-  const notes = p.reflectionNotes?.trim();
-  if (notes && notes.length > 0) {
-    embed.addFields({
-      name: 'Proof',
-      value: sanitizeCommitmentDisplay(notes, 1000),
-      inline: false,
-    });
-  } else {
-    embed.addFields({
-      name: 'State',
-      value: p.reflectionStatus,
-      inline: false,
-    });
-  }
-
-  return embed;
+      { name: 'Duration', value: duration, inline: true },
+      { name: 'Executed', value: `"${executed}"`, inline: false },
+      { name: 'Proof', value: proofLine, inline: false },
+    )
+    .setFooter({ text: 'CITADEL // execution feed' });
 }

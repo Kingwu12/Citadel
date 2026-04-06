@@ -4,6 +4,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 
+import { ensureExecutionPanel } from '../../../bot/execution-panel';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
 import { LoopService } from '../services/loop-service';
@@ -18,6 +19,7 @@ export const START_REPLY_ERROR =
   'Something went wrong. Try again in a moment.';
 
 const loopService = new LoopService();
+const START_EPHEMERAL_DELETE_DELAY_MS = 2500;
 
 export const startSlashCommand = new SlashCommandBuilder()
   .setName('start')
@@ -108,7 +110,11 @@ export async function handleStartCommand(
       loopId: result.openLoop.loopId,
     });
 
-    await interaction.editReply({ content: 'Loop open.' });
+    await ensureExecutionPanel(interaction.client, { source: 'slash_open' });
+    await interaction.editReply({ content: '\u200b' });
+    setTimeout(() => {
+      void interaction.deleteReply().catch(() => {});
+    }, START_EPHEMERAL_DELETE_DELAY_MS);
   } catch (err) {
     executionLog.error(
       'loop_open_error',

@@ -25,8 +25,6 @@ export function formatTodayLoopsSummary(p: {
   closedToday: number;
   hasOpenLoop: boolean;
   openCommitmentOneLine?: string;
-  /** Preformatted, e.g. "42m" or "1h 5m". */
-  totalDurationClosedToday?: string;
 }): string {
   const closure =
     p.openedToday > 0
@@ -38,18 +36,12 @@ export function formatTodayLoopsSummary(p: {
     `Opened: ${p.openedToday}`,
     `Closed: ${p.closedToday}`,
     `Open: ${p.hasOpenLoop ? 1 : 0}`,
-    `Close rate: ${closure}`,
+    `Closure: ${closure}`,
   ];
-
-  if (p.totalDurationClosedToday !== undefined) {
-    lines.push(`Duration (closed today): ${p.totalDurationClosedToday}`);
-  }
 
   let tail = '';
   if (p.hasOpenLoop && p.openCommitmentOneLine) {
     tail = `\n\nOpen: ${sanitizeCommitmentDisplay(p.openCommitmentOneLine, 200)}`;
-  } else if (!p.hasOpenLoop && p.closedToday > 0) {
-    tail = `\n\n${p.closedToday} closed today.`;
   }
 
   return lines.join('\n') + tail;
