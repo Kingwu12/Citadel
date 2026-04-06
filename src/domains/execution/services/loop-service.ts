@@ -91,7 +91,7 @@ export class LoopService {
       guildId: input.guildId,
       channelId: input.channelId,
       commitmentText: input.commitmentText.trim(),
-      status: 'open',
+      status: 'active',
       openedAt: now,
       createdAt: now,
       updatedAt: now,

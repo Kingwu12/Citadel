@@ -1,7 +1,7 @@
 import type { DocumentReference, DocumentSnapshot, Firestore } from 'firebase-admin/firestore';
 
 import { getFirestoreDb } from '../../../infra/firebase/firestore';
-import type { OpenLoop } from '../types/execution.types';
+import type { OpenLoop, OpenLoopStatus } from '../types/execution.types';
 import { EXECUTION_OPEN_LOOPS } from './execution-collections';
 
 function toFirestorePayload(loop: OpenLoop): Record<string, unknown> {
@@ -31,6 +31,7 @@ function mapSnapshotToOpenLoop(snap: DocumentSnapshot): OpenLoop | null {
   const guildId = data.guildId;
   const channelId = data.channelId;
   const commitmentText = data.commitmentText;
+  const status = data.status;
   const loopPanelMessageId = data.loopPanelMessageId;
   const loopPanelChannelId = data.loopPanelChannelId;
   const openedAt = data.openedAt;
@@ -51,6 +52,8 @@ function mapSnapshotToOpenLoop(snap: DocumentSnapshot): OpenLoop | null {
 
   if (!snap.id) return null;
 
+  const loopStatus: OpenLoopStatus = status === 'awaiting_snap' ? 'awaiting_snap' : 'active';
+
   return {
     loopId,
     discordUserId: snap.id,
@@ -59,7 +62,7 @@ function mapSnapshotToOpenLoop(snap: DocumentSnapshot): OpenLoop | null {
     commitmentText,
     loopPanelMessageId: typeof loopPanelMessageId === 'string' ? loopPanelMessageId : undefined,
     loopPanelChannelId: typeof loopPanelChannelId === 'string' ? loopPanelChannelId : undefined,
-    status: 'open',
+    status: loopStatus,
     openedAt,
     createdAt,
     updatedAt,
@@ -97,6 +100,14 @@ export class OpenLoopRepo {
     if (!discordUserId || !loopPanelMessageId || !loopPanelChannelId) return;
     await this.docRef(discordUserId).set(
       { loopPanelMessageId, loopPanelChannelId, updatedAt: Date.now(), schemaVersion: 1 },
+      { merge: true },
+    );
+  }
+
+  async setStatus(discordUserId: string, status: OpenLoopStatus): Promise<void> {
+    if (!discordUserId) return;
+    await this.docRef(discordUserId).set(
+      { status, updatedAt: Date.now(), schemaVersion: 1 },
       { merge: true },
     );
   }

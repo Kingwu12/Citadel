@@ -8,6 +8,7 @@ export type DiscordSnowflake = string;
 export type ReflectionStatus = 'moved' | 'partial' | 'stalled';
 
 export type ProofType = 'attachment' | 'text' | 'link' | 'mixed';
+export type OpenLoopStatus = 'active' | 'awaiting_snap';
 
 /** In-flight loop: at most one per user (Firestore doc id = discordUserId). */
 export interface OpenLoop {
@@ -18,7 +19,7 @@ export interface OpenLoop {
   commitmentText: string;
   loopPanelMessageId?: string;
   loopPanelChannelId?: string;
-  status: 'open';
+  status: OpenLoopStatus;
   openedAt: number;
   createdAt: number;
   updatedAt: number;

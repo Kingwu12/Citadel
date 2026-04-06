@@ -20,11 +20,12 @@ import {
   getExecutionPanelGuildId,
   isExecutionPanelConfigured,
 } from '../config/execution-panel-env';
-import { sendExecutionCompleteToFeed } from './execution-feed-channel';
+import { sendExecutionCompleteToFeed, sendUserStyledChannelMessage } from './execution-feed-channel';
 import { ClosedLoopRepo } from '../domains/execution/repositories/closed-loop-repo';
 import { ExecutionPanelStateRepo } from '../domains/execution/repositories/execution-panel-state-repo';
 import { OpenLoopRepo } from '../domains/execution/repositories/open-loop-repo';
-import { buildLoopOpenCockpitEmbed, formatElapsedCompact } from '../domains/execution/formatters/loop-cockpit-embed';
+import { formatElapsedCompact } from '../domains/execution/formatters/loop-cockpit-embed';
+import { buildAlreadyOpenLoopReply } from '../domains/execution/formatters/open-loop-link';
 import { sanitizeCommitmentDisplay } from '../domains/execution/formatters/loop-formatters';
 import { executionAccessService, toExecutionAccessContext } from '../domains/execution/services/execution-access-service';
 import { LoopService } from '../domains/execution/services/loop-service';
@@ -254,23 +255,31 @@ function ownerUserIdFromLoopPanelCloseCustomId(customId: string): string | null 
   return ownerUserId.length > 0 ? ownerUserId : null;
 }
 
-function buildActiveLoopPanelEmbed(taskText: string, openedAt: number): EmbedBuilder {
+function buildActiveLoopPanelEmbed(params: {
+  taskText: string;
+  openedAt: number;
+  status: 'active' | 'awaiting_snap';
+}): EmbedBuilder {
+  const statusLabel = params.status === 'awaiting_snap' ? 'AWAITING SNAP' : 'LIVE';
+  const helper = params.status === 'awaiting_snap' ? '\nUpload image to close.' : '';
   return new EmbedBuilder()
     .setColor(0xffd700)
     .setDescription('● LOOP OPEN')
     .addFields(
-      { name: '◈ EXECUTING', value: sanitizeCommitmentDisplay(taskText, 500) || '—', inline: false },
-      { name: '◈ TIME IN', value: formatElapsedCompact(openedAt), inline: false },
-      { name: '◈ STATUS', value: 'LIVE', inline: false },
+      { name: '◈ EXECUTING', value: sanitizeCommitmentDisplay(params.taskText, 500) || '—', inline: false },
+      { name: '◈ TIME IN', value: formatElapsedCompact(params.openedAt), inline: false },
+      { name: '◈ STATUS', value: `${statusLabel}${helper}`, inline: false },
     );
 }
 
-function buildActiveLoopPanelComponents(ownerUserId: string): ActionRowBuilder<ButtonBuilder>[] {
+function buildActiveLoopPanelComponents(ownerUserId: string, status: 'active' | 'awaiting_snap'): ActionRowBuilder<ButtonBuilder>[] {
+  const isAwaitingSnap = status === 'awaiting_snap';
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(buildLoopPanelCloseCustomId(ownerUserId))
         .setLabel('Close Loop')
+        .setDisabled(isAwaitingSnap)
         .setStyle(ButtonStyle.Danger),
     ),
   ];
@@ -288,10 +297,14 @@ export async function createActiveLoopPanelMessage(
   if (!guild) return;
   const channel = await guild.channels.fetch(getActiveLoopsChannelId()).catch(() => null);
   if (!channel || !channel.isTextBased() || !channel.isSendable()) return;
-  const msg = await channel.send({
-    embeds: [buildActiveLoopPanelEmbed(openLoop.commitmentText, openLoop.openedAt)],
-    components: buildActiveLoopPanelComponents(openLoop.discordUserId),
+  const msg = await sendUserStyledChannelMessage(client, {
+    channel,
+    userId: openLoop.discordUserId,
+    embeds: [buildActiveLoopPanelEmbed({ taskText: openLoop.commitmentText, openedAt: openLoop.openedAt, status: 'active' })],
+    components: buildActiveLoopPanelComponents(openLoop.discordUserId, 'active'),
+    logPrefix: 'active_loop_panel',
   });
+  if (!msg) return;
   await openLoopRepo.setLoopPanelRef(openLoop.discordUserId, msg.id, channel.id);
 }
 
@@ -310,6 +323,82 @@ export async function deleteActiveLoopPanelMessage(
   const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
   if (!channel || !channel.isTextBased()) return;
   await channel.messages.fetch(openLoop.loopPanelMessageId).then((m) => m.delete()).catch(() => {});
+}
+
+export async function markActiveLoopAwaitingSnap(
+  client: Client,
+  openLoop: {
+    discordUserId: string;
+    guildId: string;
+    commitmentText: string;
+    openedAt: number;
+    loopPanelChannelId?: string;
+    loopPanelMessageId?: string;
+  },
+): Promise<void> {
+  await openLoopRepo.setStatus(openLoop.discordUserId, 'awaiting_snap');
+  if (!openLoop.loopPanelMessageId) return;
+  const guild = await client.guilds.fetch(openLoop.guildId).catch(() => null);
+  if (!guild) return;
+  const targetChannelId = openLoop.loopPanelChannelId || getActiveLoopsChannelId();
+  const channel = await guild.channels.fetch(targetChannelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) return;
+  await channel.messages.fetch(openLoop.loopPanelMessageId).then((msg) =>
+    msg.edit({
+      embeds: [buildActiveLoopPanelEmbed({ taskText: openLoop.commitmentText, openedAt: openLoop.openedAt, status: 'awaiting_snap' })],
+      components: buildActiveLoopPanelComponents(openLoop.discordUserId, 'awaiting_snap'),
+    }),
+  ).catch(() => {});
+}
+
+function isImageAttachment(att: { contentType: string | null; name: string | null }): boolean {
+  if (att.contentType?.toLowerCase().startsWith('image/')) return true;
+  if (!att.name) return false;
+  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(att.name);
+}
+
+export async function handleActiveLoopsProofMessage(message: Message): Promise<boolean> {
+  executionLog.info('awaiting_snap_message_seen', {
+    userId: message.author.id,
+    channelId: message.channelId,
+    attachments: message.attachments.size,
+  });
+  if (!message.inGuild() || message.author.bot) return false;
+  if (message.guildId !== getExecutionPanelGuildId()) return false;
+  if (message.channelId !== getActiveLoopsChannelId()) return false;
+
+  const open = await loopService.getOpenLoopForUser(message.author.id);
+  executionLog.info('awaiting_snap_session_lookup', {
+    userId: message.author.id,
+    found: Boolean(open),
+    status: open?.status,
+  });
+  if (!open || open.status !== 'awaiting_snap') return false;
+
+  if (message.attachments.size < 1) return false;
+  const firstAttachment = message.attachments.first();
+  if (!firstAttachment) return false;
+
+  const proofText = message.content.trim();
+  const result = await loopService.closeLoop({
+    discordUserId: message.author.id,
+    proofText: proofText.length > 0 ? proofText : undefined,
+    proofAttachmentUrls: [firstAttachment.url],
+    proofMessageId: message.id,
+  });
+  if (!result.ok) return false;
+
+  await sendExecutionCompleteToFeed(message.client, {
+    userId: message.author.id,
+    durationMs: result.closedLoop.openDurationMs,
+    taskText: result.closedLoop.commitmentText,
+    proofText: result.closedLoop.proofText,
+    reflectionStatus: result.closedLoop.reflectionStatus,
+    proofAttachmentUrls: result.closedLoop.proofAttachmentUrls,
+  });
+  await deleteActiveLoopPanelMessage(message.client, open);
+  await ensureExecutionPanel(message.client, { source: 'proof_close', userId: message.author.id });
+  return true;
 }
 
 type PanelLogExtra = Record<string, string | undefined>;
@@ -521,7 +610,10 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
   }
 
   const ctx = toExecutionAccessContext(interaction);
-  if (!executionAccessService.canUseExecutionCommand(ctx)) {
+  const canUseExecution = customId === MODAL_END
+    ? executionAccessService.isExecutionEnabledForGuild(ctx.guildId)
+    : executionAccessService.canUseExecutionCommand(ctx);
+  if (!canUseExecution) {
     await interaction.reply({ content: 'Execution is not available here.', ephemeral: true }).catch(() => {});
     return true;
   }
@@ -575,7 +667,7 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
           source: 'panel_modal',
         });
         await interaction.editReply({
-          content: 'You already have an open loop. Close it before opening another.',
+          content: buildAlreadyOpenLoopReply(existingOpen),
         });
         return true;
       }
@@ -596,7 +688,7 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
           source: 'panel_modal',
         });
         await interaction.editReply({
-          content: 'You already have an open loop. Close it before opening another.',
+          content: buildAlreadyOpenLoopReply(result.openLoop),
         });
         return true;
       }
@@ -611,14 +703,7 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
 
       await createActiveLoopPanelMessage(interaction.client, result.openLoop);
       await ensureExecutionPanel(interaction.client, { source: 'panel_open', userId });
-      await interaction.editReply({
-        embeds: [
-          buildLoopOpenCockpitEmbed({
-            intention: result.openLoop.commitmentText,
-            openedAt: result.openLoop.openedAt,
-          }),
-        ],
-      });
+      await interaction.editReply({ content: 'Loop started.' });
     } catch (err) {
       console.error('[citadel] MODAL_START error', err);
       executionLog.error('loop_open_error', { userId, guildId, channelId, source: 'panel_modal' }, err);
@@ -636,136 +721,10 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
   }
 
   if (customId === MODAL_END) {
-    if (!isConfiguredActiveLoopsChannel(guildId, channelId)) {
-      await interaction.reply({ content: 'Use the active-loops channel.', ephemeral: true }).catch(() => {});
-      return true;
-    }
-    const proof = interaction.fields.getTextInputValue(INPUT_PROOF).trim();
-    const reflectionNotesRaw = interaction.fields.getTextInputValue(INPUT_REFLECTION)?.trim() ?? '';
-    // Future enhancement: after modal submit, prompt user for attachment upload
-    // as a second-step proof flow (Discord modals do not support file uploads).
-
-    if (!proof) {
-      executionLog.info('loop_close_blocked_no_proof', {
-        userId,
-        guildId,
-        channelId,
-        source: 'panel_modal',
-      });
-      await interaction.reply({ content: CLOSE_PROOF_REQUIRED_MESSAGE, ephemeral: true });
-      return true;
-    }
-    if (!reflectionNotesRaw) {
-      executionLog.info('loop_close_blocked_no_proof', {
-        userId,
-        guildId,
-        channelId,
-        source: 'panel_modal',
-      });
-      await interaction.reply({ content: CLOSE_PROOF_REQUIRED_MESSAGE, ephemeral: true });
-      return true;
-    }
-
-    try {
-      await interaction.deferReply({ ephemeral: true });
-    } catch (deferErr) {
-      console.error('[citadel] MODAL_END deferReply failed', deferErr);
-      executionLog.error(
-        'loop_close_defer_failed',
-        { userId, guildId, channelId, source: 'panel_modal' },
-        deferErr,
-      );
-      await interaction
-        .reply({ content: 'Unable to close loop.', ephemeral: true })
-        .catch(() => {});
-      return true;
-    }
-
-    try {
-      const open = await loopService.getOpenLoopForUser(userId);
-      if (!open) {
-        executionLog.info('loop_close_blocked_no_open', {
-          userId,
-          guildId,
-          channelId,
-          source: 'panel_modal',
-        });
-        await interaction.editReply({ content: 'No open loop found.' });
-        return true;
-      }
-
-      executionLog.info('loop_close_requested', {
-        userId,
-        guildId,
-        channelId,
-        loopId: open.loopId,
-        source: 'panel_modal',
-      });
-
-      executionLog.info('loop_proof_received', {
-        userId,
-        guildId,
-        channelId,
-        loopId: open.loopId,
-        source: 'panel_modal',
-      });
-
-      const result = await loopService.closeLoop({
-        discordUserId: userId,
-        proofText: proof,
-        reflectionStatus: 'partial',
-        reflectionNotes: reflectionNotesRaw.length > 0 ? reflectionNotesRaw : undefined,
-      });
-
-      if (!result.ok) {
-        executionLog.info('loop_close_blocked_no_open', {
-          userId,
-          guildId,
-          channelId,
-          source: 'panel_modal',
-        });
-        await interaction.editReply({ content: 'No open loop found.' });
-        return true;
-      }
-
-      executionLog.info('loop_closed', {
-        userId,
-        guildId,
-        channelId,
-        loopId: result.closedLoop.loopId,
-        openDurationMs: result.closedLoop.openDurationMs,
-        closedLoopFirestoreId: result.closedLoopFirestoreId,
-        source: 'panel_modal',
-      });
-
-      await deleteActiveLoopPanelMessage(interaction.client, open);
-      await ensureExecutionPanel(interaction.client, { source: 'panel_close', userId });
-      await sendExecutionCompleteToFeed(interaction.client, {
-        userId,
-        durationMs: result.closedLoop.openDurationMs,
-        taskText: result.closedLoop.commitmentText,
-        proofText: result.closedLoop.proofText,
-        reflectionStatus: result.closedLoop.reflectionStatus,
-        proofAttachmentUrls: result.closedLoop.proofAttachmentUrls,
-      });
-      await interaction.deleteReply().catch(() => {});
-    } catch (err) {
-      console.error('[citadel] MODAL_END error', err);
-      executionLog.error(
-        'loop_close_error',
-        { userId, guildId, channelId, source: 'panel_modal' },
-        err,
-      );
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: 'Unable to close loop.' });
-        } else {
-          await interaction.reply({ content: 'Unable to close loop.', ephemeral: true });
-        }
-      } catch (replyErr) {
-        console.error('[citadel] MODAL_END failed to send error reply', replyErr);
-      }
-    }
+    await interaction.reply({
+      content: 'Close modal is disabled. Click Close Loop, then upload one image in this channel.',
+      ephemeral: true,
+    }).catch(() => {});
     return true;
   }
 
@@ -796,7 +755,10 @@ export async function handleExecutionPanelButton(interaction: ButtonInteraction)
   }
 
   const ctx = toExecutionAccessContext(interaction);
-  if (!executionAccessService.canUseExecutionCommand(ctx)) {
+  const canUseExecution = customId.startsWith(LOOP_PANEL_BUTTON_CLOSE_PREFIX)
+    ? executionAccessService.isExecutionEnabledForGuild(ctx.guildId)
+    : executionAccessService.canUseExecutionCommand(ctx);
+  if (!canUseExecution) {
     await interaction.reply({ content: 'Execution is not available here.', ephemeral: true }).catch(() => {});
     return true;
   }
@@ -832,7 +794,7 @@ async function handleOpenButton(interaction: ButtonInteraction): Promise<void> {
       source: 'panel',
     });
     await interaction.reply({
-      content: 'You already have an open loop. Close it before opening another.',
+      content: buildAlreadyOpenLoopReply(open),
       ephemeral: true,
     });
     return;
@@ -855,7 +817,18 @@ async function handleOwnedLoopCloseButton(
     await interaction.reply({ content: 'No open loop found.', ephemeral: true });
     return;
   }
-  await interaction.showModal(buildEndModal());
+  if (open.status === 'awaiting_snap') {
+    await interaction.reply({
+      content: 'Awaiting snap. Upload one image in this channel to close.',
+      ephemeral: true,
+    });
+    return;
+  }
+  await markActiveLoopAwaitingSnap(interaction.client, open);
+  await interaction.reply({
+    content: 'Snap proof to close the loop. Upload one image in this channel. Add text if you want.',
+    ephemeral: true,
+  });
 }
 
 async function handleTodayButton(interaction: ButtonInteraction): Promise<void> {

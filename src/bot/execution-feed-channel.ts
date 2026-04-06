@@ -1,4 +1,4 @@
-import type { Client, TextBasedChannel, Webhook } from 'discord.js';
+import type { Client, Message, MessageCreateOptions, TextBasedChannel, Webhook } from 'discord.js';
 import { getExecutionFeedChannelId } from '../config/execution-panel-env';
 import { buildExecutionFeedEmbed } from '../domains/execution/formatters/execution-feed-formatter';
 import type { ReflectionStatus } from '../domains/execution/types/execution.types';
@@ -59,6 +59,33 @@ export async function sendExecutionCompleteToFeed(
     proofText: params.proofText,
     proofAttachmentUrls: params.proofAttachmentUrls,
   });
+  await sendUserStyledChannelMessage(client, {
+    channel,
+    userId: params.userId,
+    embeds: [embed],
+    logPrefix: 'execution_feed',
+  });
+}
+
+export async function sendUserStyledChannelMessage(
+  client: Client,
+  params: {
+    channel: TextBasedChannel;
+    userId: string;
+    embeds?: MessageCreateOptions['embeds'];
+    content?: string;
+    components?: MessageCreateOptions['components'];
+    logPrefix: string;
+  },
+): Promise<Message | null> {
+  const channel = params.channel;
+  if (!channel.isSendable()) {
+    executionLog.warn(`${params.logPrefix}_post_skipped_channel_unsendable`, {
+      userId: params.userId,
+      channelId: channel.id,
+    });
+    return null;
+  }
   const guild = channel.isDMBased() ? null : channel.guild;
   const member = guild ? await guild.members.fetch(params.userId).catch(() => null) : null;
   const user = member?.user ?? await client.users.fetch(params.userId).catch(() => null);
@@ -70,26 +97,34 @@ export async function sendExecutionCompleteToFeed(
     if (!hook || !hook.token) {
       throw new Error('no_reusable_webhook');
     }
-    await hook.send({
+    const sent = await hook.send({
       username: displayName,
       avatarURL,
-      embeds: [embed],
+      content: params.content,
+      embeds: params.embeds,
+      components: params.components,
     });
-    executionLog.info('execution_feed_posted_via_webhook', {
-      channelId,
+    executionLog.info(`${params.logPrefix}_posted_via_webhook`, {
+      channelId: channel.id,
       userId: params.userId,
       webhookId: hook.id,
     });
+    return sent;
   } catch (err) {
-    executionLog.warn('execution_feed_webhook_failed_fallback_send', {
-      channelId,
+    executionLog.warn(`${params.logPrefix}_webhook_failed_fallback_send`, {
+      channelId: channel.id,
       userId: params.userId,
       reason: err instanceof Error ? err.message : String(err),
     });
-    await channel.send({ embeds: [embed] });
-    executionLog.info('execution_feed_posted_via_bot_fallback', {
-      channelId,
+    const sent = await channel.send({
+      content: params.content,
+      embeds: params.embeds,
+      components: params.components,
+    });
+    executionLog.info(`${params.logPrefix}_posted_via_bot_fallback`, {
+      channelId: channel.id,
       userId: params.userId,
     });
+    return sent;
   }
 }

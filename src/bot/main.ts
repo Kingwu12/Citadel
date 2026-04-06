@@ -6,6 +6,7 @@ import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
 import { routeChatInputCommand } from './command-router';
 import {
   ensureExecutionPanel,
+  handleActiveLoopsProofMessage,
   handleExecutionModalSubmit,
   handleExecutionPanelButton,
   refreshExecutionPanelIfActive,
@@ -20,7 +21,7 @@ if (!token) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
 client.once(Events.ClientReady, async (readyClient) => {
@@ -73,6 +74,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     } catch {
       /* ignore */
     }
+  }
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    await handleActiveLoopsProofMessage(message);
+  } catch (err) {
+    console.error(err);
   }
 });
 

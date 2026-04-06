@@ -1,7 +1,7 @@
 import { type ChatInputCommandInteraction, MessageFlags, SlashCommandBuilder } from 'discord.js';
 
 import { createActiveLoopPanelMessage, ensureExecutionPanel } from '../../../bot/execution-panel';
-import { buildLoopOpenCockpitEmbed } from '../formatters/loop-cockpit-embed';
+import { buildAlreadyOpenLoopReply } from '../formatters/open-loop-link';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
 import { LoopService } from '../services/loop-service';
@@ -82,7 +82,7 @@ export async function handleStartCommand(interaction: ChatInputCommandInteractio
         channelId: interaction.channelId,
         loopId: result.openLoop.loopId,
       });
-      await interaction.editReply({ content: START_REPLY_ALREADY_OPEN });
+      await interaction.editReply({ content: buildAlreadyOpenLoopReply(result.openLoop) });
       return;
     }
 
@@ -95,14 +95,7 @@ export async function handleStartCommand(interaction: ChatInputCommandInteractio
 
     await createActiveLoopPanelMessage(interaction.client, result.openLoop);
     await ensureExecutionPanel(interaction.client, { source: 'slash_open', userId: interaction.user.id });
-    await interaction.editReply({
-      embeds: [
-        buildLoopOpenCockpitEmbed({
-          intention: result.openLoop.commitmentText,
-          openedAt: result.openLoop.openedAt,
-        }),
-      ],
-    });
+    await interaction.editReply({ content: 'Loop started.' });
   } catch (err) {
     executionLog.error(
       'loop_open_error',
