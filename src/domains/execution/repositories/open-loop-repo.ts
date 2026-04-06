@@ -86,12 +86,19 @@ export class OpenLoopRepo {
     await this.docRef(discordUserId).delete();
   }
 
-  async listOpenLoopsInContext(guildId: string, channelId: string): Promise<OpenLoop[]> {
-    const snap = await this
+  async listOpenLoopsInContext(
+    guildId: string,
+    channelId: string,
+    limitCount?: number,
+  ): Promise<OpenLoop[]> {
+    let query = this
       .collection()
       .where('guildId', '==', guildId)
-      .where('channelId', '==', channelId)
-      .get();
+      .where('channelId', '==', channelId);
+    if (typeof limitCount === 'number' && Number.isFinite(limitCount) && limitCount > 0) {
+      query = query.limit(Math.floor(limitCount));
+    }
+    const snap = await query.get();
 
     const loops: OpenLoop[] = [];
     for (const doc of snap.docs) {

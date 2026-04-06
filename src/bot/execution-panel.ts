@@ -16,17 +16,18 @@ import {
 
 import {
   getExecutionPanelChannelId,
-  getExecutionFeedChannelId,
   getExecutionPanelGuildId,
   isExecutionPanelConfigured,
 } from '../config/execution-panel-env';
+import { sendExecutionCompleteToFeed } from './execution-feed-channel';
 import { ClosedLoopRepo } from '../domains/execution/repositories/closed-loop-repo';
 import { ExecutionPanelStateRepo } from '../domains/execution/repositories/execution-panel-state-repo';
 import { OpenLoopRepo } from '../domains/execution/repositories/open-loop-repo';
+import { buildLoopOpenCockpitEmbed, formatElapsedCompact } from '../domains/execution/formatters/loop-cockpit-embed';
+import { sanitizeCommitmentDisplay } from '../domains/execution/formatters/loop-formatters';
 import { executionAccessService, toExecutionAccessContext } from '../domains/execution/services/execution-access-service';
-import { buildSuggestedClosePost } from '../domains/execution/formatters/execution-feed-formatter';
 import { LoopService } from '../domains/execution/services/loop-service';
-import { buildTodayClosedLoopsSummaryForContext, buildTodayLoopsSummaryForUser } from '../domains/execution/services/today-loops-summary';
+import { buildTodayClosedLoopsSummaryForContext } from '../domains/execution/services/today-loops-summary';
 import { executionLog } from '../shared/logging';
 
 const loopService = new LoopService();
@@ -42,12 +43,15 @@ const MODAL_END = 'citadel:modal:end';
 const INPUT_COMMITMENT = 'commitment';
 const INPUT_PROOF = 'proof';
 const INPUT_REFLECTION = 'reflection';
-const PRESENCE_NAME_LIMIT = 3;
+const ACTIVE_FETCH_LIMIT = 20;
+const ACTIVE_VISIBLE_LIMIT = 3;
+const PANEL_TICK_INTERVAL_MS = 15000;
 const CLOSE_PROOF_REQUIRED_MESSAGE = 'Drop proof before closing — one line or an image is enough.';
 const OPEN_INTENTION_INVALID_MESSAGE = 'Be specific — what are you actually building or doing?';
-const ACTIVE_INTENTION_PREVIEW_LIMIT = 90;
-const YOU_INTENTION_PREVIEW_LIMIT = 120;
 const OPEN_INTENTION_MIN_LENGTH = 8;
+const lastIntervalRenderByContext = new Map<string, string>();
+const PANEL_EMBED_COLOR_ACTIVE = 0x00ff94;
+const PANEL_EMBED_COLOR_IDLE = 0xff3b3b;
 
 export type EnsurePanelResult =
   | { ok: true; action: 'created' | 'updated'; panelMessageId: string }
@@ -88,20 +92,6 @@ function messageIsOurPanel(message: Message, clientId: string | undefined): bool
   return false;
 }
 
-const PANEL_EMBED_COLOR_ACTIVE = 0x00ff94;
-const PANEL_EMBED_COLOR_IDLE = 0xff3b3b;
-
-function formatElapsedCompact(openedAt: number): string {
-  const elapsedMs = Math.max(0, Date.now() - openedAt);
-  const minutes = Math.floor(elapsedMs / 60000);
-  if (minutes < 1) return '<1m';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remMin = minutes % 60;
-  if (remMin === 0) return `${hours}h`;
-  return `${hours}h ${remMin}m`;
-}
-
 function isNonWorkIntention(text: string): boolean {
   const normalized = text
     .toLowerCase()
@@ -129,44 +119,40 @@ function isFirestoreMissingIndexError(err: unknown): boolean {
   );
 }
 
+function formatPanelClock(now: Date): string {
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(now);
+}
+
 async function buildPanelEmbed(
   client: Client,
   guildId: string,
   channelId: string,
-  focusUserId: string | null,
+  _focusUserId: string | null,
 ): Promise<EmbedBuilder> {
-  const openLoops = await openLoopRepo.listOpenLoopsInContext(guildId, channelId);
-  const activeCount = openLoops.length;
-  const shown = openLoops.slice(0, PRESENCE_NAME_LIMIT);
+  const openLoops = await openLoopRepo.listOpenLoopsInContext(guildId, channelId, ACTIVE_FETCH_LIMIT);
+  const sortedOpenLoops = [...openLoops].sort((a, b) => a.openedAt - b.openedAt);
+  const activeCount = sortedOpenLoops.length;
+  const shown = sortedOpenLoops.slice(0, ACTIVE_VISIBLE_LIMIT);
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   const activeEntries = await Promise.all(
     shown.map(async (loop) => {
       const member = guild ? await guild.members.fetch(loop.discordUserId).catch(() => null) : null;
       const name = member?.displayName ?? `<@${loop.discordUserId}>`;
-      const compactIntention = loop.commitmentText.replace(/\s+/g, ' ').trim();
-      const intention = compactIntention.length > ACTIVE_INTENTION_PREVIEW_LIMIT
-        ? `${compactIntention.slice(0, ACTIVE_INTENTION_PREVIEW_LIMIT - 1)}...`
-        : compactIntention;
-      return `▸ ${name} — ${intention || '—'}  [${formatElapsedCompact(loop.openedAt)}]`;
+      const intention = sanitizeCommitmentDisplay(loop.commitmentText, 80) || '—';
+      return `▸ ${name} — ${intention} · ${formatElapsedCompact(loop.openedAt)}`;
     }),
   );
   const remainder = Math.max(0, activeCount - activeEntries.length);
   const activeValue = activeEntries.length > 0
-    ? `${activeEntries.join('\n')}${remainder > 0 ? `\n+${remainder} more` : ''}`
-    : '0 executing';
-  const focusOpenLoop = focusUserId
-    ? openLoops.find((loop) => loop.discordUserId === focusUserId) ?? null
-    : null;
-  const youLine = focusOpenLoop
-    ? (() => {
-      const compactIntention = focusOpenLoop.commitmentText.replace(/\s+/g, ' ').trim();
-      const intention = compactIntention.length > YOU_INTENTION_PREVIEW_LIMIT
-        ? `${compactIntention.slice(0, YOU_INTENTION_PREVIEW_LIMIT - 1)}...`
-        : compactIntention;
-      return `▸ ${intention || '—'}  [${formatElapsedCompact(focusOpenLoop.openedAt)}]`;
-    })()
-    : 'Idle';
-  let todayValue = '—';
+    ? [...activeEntries, remainder > 0 ? `+${remainder} more` : '']
+      .filter(Boolean)
+      .join('\n')
+    : 'No active loops.';
+  let todayValue = '— loops closed';
   try {
     const todayRange = closedLoopRepo.todayRange();
     const closedToday = await closedLoopRepo.listClosedInContextByClosedAtRange(
@@ -186,16 +172,17 @@ async function buildPanelEmbed(
     }
   }
 
+  const now = new Date();
+  const description = '● LIVE';
+
   return new EmbedBuilder()
     .setColor(activeCount > 0 ? PANEL_EMBED_COLOR_ACTIVE : PANEL_EMBED_COLOR_IDLE)
-    .setDescription('● LIVE')
+    .setDescription(description)
     .addFields(
-      { name: '◈ ACTIVE', value: activeValue, inline: false },
-      { name: '◈ YOU', value: youLine, inline: true },
+      { name: '◈ EXECUTING NOW', value: activeValue, inline: false },
       { name: '◈ TODAY', value: todayValue, inline: true },
     )
-    .setFooter({ text: 'open → execute → close' })
-    .setTimestamp(new Date());
+    .setFooter({ text: `MODE LABS · updated at ${formatPanelClock(now)}` });
 }
 
 function buildPanelComponents(): ActionRowBuilder<ButtonBuilder>[] {
@@ -257,6 +244,20 @@ function buildEndModal(): ModalBuilder {
 }
 
 type PanelLogExtra = Record<string, string | undefined>;
+
+function panelContextKey(guildId: string, channelId: string): string {
+  return `${guildId}:${channelId}`;
+}
+
+function panelRenderSignature(embed: EmbedBuilder): string {
+  const json = embed.toJSON();
+  return JSON.stringify({
+    description: json.description ?? '',
+    color: json.color ?? 0,
+    fields: json.fields ?? [],
+    footer: json.footer?.text ?? '',
+  });
+}
 
 /**
  * Creates or refreshes the single control-panel message; dedupes older panel copies in-channel.
@@ -366,6 +367,64 @@ export async function ensureExecutionPanel(
   } catch (err) {
     executionLog.error('execution_panel_bootstrap_failed', { guildId, channelId }, err);
     return { ok: false, reason: 'send_or_edit_failed' };
+  }
+}
+
+/**
+ * 15s ticker refresh for "live" elapsed times in ACTIVE.
+ * - Runs only while at least one active loop exists.
+ * - Skips message edits when rendered content did not change.
+ */
+export async function refreshExecutionPanelIfActive(client: Client): Promise<void> {
+  if (!isExecutionPanelConfigured()) return;
+  const guildId = getExecutionPanelGuildId();
+  const channelId = getExecutionPanelChannelId();
+  const contextKey = panelContextKey(guildId, channelId);
+
+  try {
+    const openLoops = await openLoopRepo.listOpenLoopsInContext(guildId, channelId, ACTIVE_FETCH_LIMIT);
+    if (openLoops.length < 1) {
+      lastIntervalRenderByContext.delete(contextKey);
+      return;
+    }
+
+    const focusUserId = await panelStateRepo.getFocusUserId(guildId, channelId);
+    const embed = await buildPanelEmbed(client, guildId, channelId, focusUserId);
+    const signature = panelRenderSignature(embed);
+    if (lastIntervalRenderByContext.get(contextKey) === signature) return;
+
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) return;
+    const channel = await guild.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) return;
+    const textChannel = channel as GuildTextBasedChannel;
+
+    const storedId = await panelStateRepo.getPanelMessageId(guildId, channelId);
+    let panelMessage: Message | null = null;
+    if (storedId) {
+      panelMessage = await textChannel.messages.fetch(storedId).catch(() => null);
+    }
+
+    if (!panelMessage) {
+      const restored = await ensureExecutionPanel(client, { source: 'interval_restore' });
+      if (restored.ok) {
+        lastIntervalRenderByContext.set(contextKey, signature);
+      }
+      return;
+    }
+
+    await panelMessage.edit({ content: null, embeds: [embed], components: buildPanelComponents() });
+    lastIntervalRenderByContext.set(contextKey, signature);
+    executionLog.info('execution_panel_updated', {
+      guildId,
+      channelId,
+      panelMessageId: panelMessage.id,
+      active_count: String(openLoops.length),
+      source: 'interval_tick',
+      tick_ms: String(PANEL_TICK_INTERVAL_MS),
+    });
+  } catch (err) {
+    executionLog.error('execution_panel_interval_refresh_failed', { guildId, channelId }, err);
   }
 }
 
@@ -485,7 +544,14 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
       });
 
       await ensureExecutionPanel(interaction.client, { source: 'panel_open', userId });
-      await interaction.deleteReply().catch(() => {});
+      await interaction.editReply({
+        embeds: [
+          buildLoopOpenCockpitEmbed({
+            intention: result.openLoop.commitmentText,
+            openedAt: result.openLoop.openedAt,
+          }),
+        ],
+      });
     } catch (err) {
       console.error('[citadel] MODAL_START error', err);
       executionLog.error('loop_open_error', { userId, guildId, channelId, source: 'panel_modal' }, err);
@@ -590,21 +656,15 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
       });
 
       await ensureExecutionPanel(interaction.client, { source: 'panel_close', userId });
-      const suggestedPost = buildSuggestedClosePost({
+      await sendExecutionCompleteToFeed(interaction.client, {
+        userId,
         durationMs: result.closedLoop.openDurationMs,
-        executedText: result.closedLoop.commitmentText,
+        taskText: result.closedLoop.commitmentText,
         proofText: result.closedLoop.proofText,
         reflectionStatus: result.closedLoop.reflectionStatus,
+        proofAttachmentUrls: result.closedLoop.proofAttachmentUrls,
       });
-      await interaction.editReply({
-        content: [
-          `Loop closed. Post it in <#${getExecutionFeedChannelId()}>.`,
-          '',
-          '```',
-          suggestedPost,
-          '```',
-        ].join('\n'),
-      });
+      await interaction.deleteReply().catch(() => {});
     } catch (err) {
       console.error('[citadel] MODAL_END error', err);
       executionLog.error(

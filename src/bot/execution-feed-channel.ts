@@ -1,16 +1,33 @@
 import type { Client } from 'discord.js';
-import type { SuggestedClosePostParams } from '../domains/execution/formatters/execution-feed-formatter';
+import { getExecutionFeedChannelId } from '../config/execution-panel-env';
+import { buildExecutionFeedEmbed } from '../domains/execution/formatters/execution-feed-formatter';
+import type { ReflectionStatus } from '../domains/execution/types/execution.types';
 import { executionLog } from '../shared/logging';
 
-/**
- * Deprecated by design: user must post closes in execution-feed manually.
- * This remains as a guarded no-op to prevent accidental bot-authored feed posts.
- */
+export type ExecutionFeedPostParams = {
+  userId: string;
+  taskText: string;
+  durationMs: number;
+  reflectionStatus?: ReflectionStatus;
+  proofText?: string;
+  proofAttachmentUrls?: string[];
+};
+
 export async function sendExecutionCompleteToFeed(
-  _client: Client,
-  _params: SuggestedClosePostParams,
+  client: Client,
+  params: ExecutionFeedPostParams,
 ): Promise<void> {
-  executionLog.info('execution_feed_post_skipped_manual_mode', {
-    reason: 'user_posts_close_manually',
+  const channelId = getExecutionFeedChannelId();
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased() || !channel.isSendable()) {
+    executionLog.warn('execution_feed_post_skipped_channel_missing', { channelId });
+    return;
+  }
+  const embed = buildExecutionFeedEmbed({
+    durationMs: params.durationMs,
+    executedText: params.taskText,
+    proofText: params.proofText,
+    proofAttachmentUrls: params.proofAttachmentUrls,
   });
+  await channel.send({ embeds: [embed] });
 }

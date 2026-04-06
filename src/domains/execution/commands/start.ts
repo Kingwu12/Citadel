@@ -5,6 +5,7 @@ import {
 } from 'discord.js';
 
 import { ensureExecutionPanel } from '../../../bot/execution-panel';
+import { buildLoopOpenCockpitEmbed } from '../formatters/loop-cockpit-embed';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
 import { LoopService } from '../services/loop-service';
@@ -19,7 +20,6 @@ export const START_REPLY_ERROR =
   'Something went wrong. Try again in a moment.';
 
 const loopService = new LoopService();
-const START_EPHEMERAL_DELETE_DELAY_MS = 2500;
 
 export const startSlashCommand = new SlashCommandBuilder()
   .setName('start')
@@ -111,10 +111,14 @@ export async function handleStartCommand(
     });
 
     await ensureExecutionPanel(interaction.client, { source: 'slash_open', userId: interaction.user.id });
-    await interaction.editReply({ content: '\u200b' });
-    setTimeout(() => {
-      void interaction.deleteReply().catch(() => {});
-    }, START_EPHEMERAL_DELETE_DELAY_MS);
+    await interaction.editReply({
+      embeds: [
+        buildLoopOpenCockpitEmbed({
+          intention: result.openLoop.commitmentText,
+          openedAt: result.openLoop.openedAt,
+        }),
+      ],
+    });
   } catch (err) {
     executionLog.error(
       'loop_open_error',

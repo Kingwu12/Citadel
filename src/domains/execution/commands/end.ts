@@ -5,8 +5,7 @@ import {
 } from 'discord.js';
 
 import { ensureExecutionPanel } from '../../../bot/execution-panel';
-import { getExecutionFeedChannelId } from '../../../config/execution-panel-env';
-import { buildSuggestedClosePost } from '../formatters/execution-feed-formatter';
+import { sendExecutionCompleteToFeed } from '../../../bot/execution-feed-channel';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
 import type { ReflectionStatus } from '../types/execution.types';
@@ -163,23 +162,15 @@ export async function handleEndCommand(
     });
 
     await ensureExecutionPanel(interaction.client, { source: 'slash_close', userId: interaction.user.id });
-    const suggestedPost = buildSuggestedClosePost({
+    await sendExecutionCompleteToFeed(interaction.client, {
+      userId: interaction.user.id,
       durationMs: result.closedLoop.openDurationMs,
-      executedText: result.closedLoop.commitmentText,
+      taskText: result.closedLoop.commitmentText,
       proofText: result.closedLoop.proofText,
       reflectionStatus: result.closedLoop.reflectionStatus,
+      proofAttachmentUrls: result.closedLoop.proofAttachmentUrls,
     });
-    const hasAttachmentProof = (result.closedLoop.proofAttachmentUrls?.length ?? 0) > 0;
-    await interaction.editReply({
-      content: [
-        `Loop closed. Post it in <#${getExecutionFeedChannelId()}>.`,
-        '',
-        '```',
-        suggestedPost,
-        '```',
-        hasAttachmentProof ? 'Include your attachment in that post.' : '',
-      ].filter(Boolean).join('\n'),
-    });
+    await interaction.deleteReply().catch(() => {});
   } catch (err) {
     executionLog.error(
       'loop_close_error',

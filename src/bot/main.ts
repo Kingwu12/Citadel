@@ -8,10 +8,11 @@ import {
   ensureExecutionPanel,
   handleExecutionModalSubmit,
   handleExecutionPanelButton,
+  refreshExecutionPanelIfActive,
 } from './execution-panel';
 
 const token = process.env.DISCORD_BOT_TOKEN;
-const PANEL_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const PANEL_REFRESH_INTERVAL_MS = 15 * 1000;
 
 if (!token) {
   console.error('Missing DISCORD_BOT_TOKEN');
@@ -34,10 +35,7 @@ client.once(Events.ClientReady, async (readyClient) => {
     if (panelRefreshInFlight) return;
     panelRefreshInFlight = true;
     try {
-      const refreshResult = await ensureExecutionPanel(readyClient, { source: 'interval' });
-      if (!refreshResult.ok) {
-        console.warn(`Execution panel refresh: ${refreshResult.reason}`);
-      }
+      await refreshExecutionPanelIfActive(readyClient);
     } finally {
       panelRefreshInFlight = false;
     }

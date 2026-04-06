@@ -1,3 +1,4 @@
+import { EmbedBuilder } from 'discord.js';
 import type { ReflectionStatus } from '../types/execution.types';
 
 import { sanitizeCommitmentDisplay } from './loop-formatters';
@@ -34,4 +35,29 @@ export function buildSuggestedClosePost(p: SuggestedClosePostParams): string {
   }
 
   return lines.join('\n');
+}
+
+export function buildExecutionFeedEmbed(p: {
+  durationMs: number;
+  executedText: string;
+  proofText?: string;
+  proofAttachmentUrls?: string[];
+}): EmbedBuilder {
+  const duration = formatExecutionDurationShort(p.durationMs);
+  const executed = sanitizeCommitmentDisplay(p.executedText, 500) || '—';
+  const proofText = p.proofText ? sanitizeCommitmentDisplay(p.proofText, 700) : undefined;
+  const proof = proofText || p.proofAttachmentUrls?.[0];
+
+  const embed = new EmbedBuilder()
+    .setTitle('Loop closed')
+    .addFields(
+      { name: 'Duration', value: duration, inline: true },
+      { name: 'Executed', value: `"${executed}"`, inline: false },
+    );
+
+  if (proof) {
+    embed.addFields({ name: 'Proof', value: proof, inline: false });
+  }
+
+  return embed;
 }
