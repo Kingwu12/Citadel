@@ -6,6 +6,7 @@ import {
 
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
+import { requireLoopAccess } from '../services/loop-access-guard';
 import { buildTodayLoopsSummaryForUser } from '../services/today-loops-summary';
 import { START_REPLY_DENIED, START_REPLY_ERROR } from './start';
 
@@ -35,6 +36,10 @@ export async function handleTodayCommand(
       content: START_REPLY_DENIED,
       flags: MessageFlags.Ephemeral,
     });
+    return;
+  }
+
+  if (!(await requireLoopAccess(interaction))) {
     return;
   }
 

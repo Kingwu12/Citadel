@@ -31,6 +31,11 @@ import {
   executionAccessService,
   toExecutionAccessContext,
 } from '../domains/execution/services/execution-access-service';
+import {
+  hasLoopAccessMember,
+  LOOP_ACCESS_GATE_MESSAGE,
+  requireLoopAccess,
+} from '../domains/execution/services/loop-access-guard';
 import { LoopService } from '../domains/execution/services/loop-service';
 import { buildTodayClosedLoopsSummaryForContext } from '../domains/execution/services/today-loops-summary';
 import type { OpenLoop } from '../domains/execution/types/execution.types';
@@ -445,6 +450,15 @@ export async function handleActiveLoopsProofMessage(message: Message): Promise<b
   const firstAttachment = message.attachments.first();
   if (!firstAttachment) return false;
 
+  let proofMember = message.member;
+  if (!proofMember && message.guild) {
+    proofMember = await message.guild.members.fetch(message.author.id).catch(() => null);
+  }
+  if (!hasLoopAccessMember(proofMember)) {
+    await message.author.send(LOOP_ACCESS_GATE_MESSAGE).catch(() => {});
+    return false;
+  }
+
   const proofText = message.content.trim();
   const result = await loopService.closeLoop({
     discordUserId: message.author.id,
@@ -712,6 +726,8 @@ export async function handleExecutionModalSubmit(interaction: ModalSubmitInterac
     return true;
   }
 
+  if (!(await requireLoopAccess(interaction))) return true;
+
   const userId = interaction.user.id;
   const guildId = loc.guildId;
   const channelId = loc.channelId;
@@ -856,6 +872,8 @@ export async function handleExecutionPanelButton(interaction: ButtonInteraction)
     await interaction.reply({ content: 'Execution is not available here.', ephemeral: true }).catch(() => {});
     return true;
   }
+
+  if (!(await requireLoopAccess(interaction))) return true;
 
   if (customId === PANEL_BUTTON_OPEN) {
     await handleOpenButton(interaction);

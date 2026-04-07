@@ -4,6 +4,7 @@ import { createActiveLoopPanelMessage, ensureActiveLoopPanelForOpenLoop, ensureE
 import { buildAlreadyOpenLoopReply } from '../formatters/open-loop-link';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
+import { requireLoopAccess } from '../services/loop-access-guard';
 import { LoopService } from '../services/loop-service';
 
 /** User-facing copy (ephemeral — blocks only). */
@@ -45,6 +46,16 @@ export async function handleStartCommand(interaction: ChatInputCommandInteractio
     await interaction.reply({
       content: START_REPLY_DENIED,
       flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (!(await requireLoopAccess(interaction))) {
+    executionLog.info('loop_open_blocked', {
+      reason: 'loop_access_role',
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
     });
     return;
   }

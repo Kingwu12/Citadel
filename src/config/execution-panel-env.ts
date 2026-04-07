@@ -9,6 +9,19 @@ export const DEFAULT_ACTIVE_LOOPS_CHANNEL_ID = '1490651286251638865';
 /** Public execution output / social proof (not the control panel). */
 export const DEFAULT_EXECUTION_FEED_CHANNEL_ID = '1490338160012693605';
 
+/**
+ * Discord role: “Loop Access”. Required to *use* execution (slash commands, panel buttons,
+ * modals, image proof close). Anyone can still view public channels and bot messages.
+ *
+ * Override without code changes: set env `LOOP_ACCESS_ROLE_ID` to another snowflake.
+ */
+export const LOOP_ACCESS_ROLE_ID = '1490925666932359328';
+
+export function getLoopAccessRoleId(): string {
+  const v = process.env.LOOP_ACCESS_ROLE_ID?.trim();
+  return v && v.length > 0 ? v : LOOP_ACCESS_ROLE_ID;
+}
+
 export function getExecutionPanelGuildId(): string {
   const v = process.env.EXECUTION_PANEL_GUILD_ID?.trim();
   return v && v.length > 0 ? v : DEFAULT_EXECUTION_PANEL_GUILD_ID;

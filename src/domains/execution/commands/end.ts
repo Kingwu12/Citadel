@@ -4,6 +4,7 @@ import { deleteActiveLoopPanelMessage, ensureExecutionPanel } from '../../../bot
 import { sendExecutionCompleteToFeed } from '../../../bot/execution-feed-channel';
 import { executionLog } from '../../../shared/logging';
 import { executionAccessService, toExecutionAccessContext } from '../services/execution-access-service';
+import { requireLoopAccess } from '../services/loop-access-guard';
 import type { ReflectionStatus } from '../types/execution.types';
 import { LoopService } from '../services/loop-service';
 import { START_REPLY_DENIED, START_REPLY_ERROR } from './start';
@@ -62,6 +63,16 @@ export async function handleEndCommand(interaction: ChatInputCommandInteraction)
     await interaction.reply({
       content: START_REPLY_DENIED,
       flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (!(await requireLoopAccess(interaction))) {
+    executionLog.info('loop_close_blocked', {
+      reason: 'loop_access_role',
+      userId: interaction.user.id,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
     });
     return;
   }
